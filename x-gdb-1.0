@@ -1,0 +1,95 @@
+#!/bin/sh
+
+if [ $# -ne 1 ]; then
+    echo "usage: $0 package"
+    exit
+fi
+
+package=$1
+
+dir_android="BrowserShell/platform/android"
+curdir=`pwd | grep "BrowserShell/platform/android$"`
+
+if [ -z $curdir ]; then
+   echo "current director is not android work space"
+   exit 1
+fi
+
+APP_OUT=./obj/local/armeabi
+APP_PROCESS=$APP_OUT/app_process
+
+#start gdb server 
+#startgdbsvr $package > gdbserver.out & 
+#sleep 3
+#echo "--- gdbserver started."
+
+
+#start gdb server
+#########################################
+
+#find extract-pid.awpk and copy to currnet path
+AWK_FILE=extract-pid.awk
+DEBUGGER_DIR=`which $0 | sed 's/x-gdb//'`
+echo "debugger dir is $DEBUGGER_DIR"
+
+cp $DEBUGGER_DIR/$AWK_FILE . -v
+chmod +x $AWK_FILE
+
+
+if [ ! -f extract-pid.awk ]; then 
+	echo "extract-pid.awk not exist"
+	exit 1
+fi
+
+GDBSERVER_PID=`adb shell ps | awk -f extract-pid.awk -v PACKAGE="lib/gdbserver"`
+
+if [ "$GDBSERVER_PID" != "0" ]; then 
+    adb shell kill -9 $GDBSERVER_PID
+fi
+
+PID=`adb shell ps | awk -f extract-pid.awk -v PACKAGE="$1"`
+
+if [ "$PID" -eq "0" ]; then
+## COMMAND: adb_cmd shell am start -n com.UCMobile.acr/com.UCMobile.main.UCMobile
+#Starting: Intent { cmp=com.UCMobile.acr/com.UCMobile.main.UCMobile }
+## COMMAND: adb_cmd shell sleep 2
+    adb shell am start -n $1/com.UCMobile.main.UCMobile
+    adb shell sleep 2
+    PID=`adb shell ps | awk -f ~/gdb/extract-pid.awk -v PACKAGE="$1"`
+fi 
+
+## COMMAND: adb_cmd forward tcp:5039 localfilesystem:/data/data/com.UCMobile.acr/debug-socket
+adb forward tcp:5039 localfilesystem:/data/data/$1/debug-socket
+## COMMAND: adb_cmd shell run-as com.UCMobile.acr lib/gdbserver +debug-socket --attach 19275
+echo adb shell run-as $1 lib/gdbserver +debug-socket --attach $PID
+adb shell run-as $1 lib/gdbserver +debug-socket --attach $PID > ~/.gdb.log &
+
+
+#pull files from devices
+#####################################
+adb pull /system/bin/app_process $APP_OUT/app_process
+echo "Pulled app_process from device/emulator."
+
+adb pull /system/bin/linker $APP_OUT/linker
+echo "Pulled linker form device/emulator."
+
+adb pull /system/lib/libc.so $APP_OUT/libc.so
+echo "Pulled libc.so from device/emulator."
+
+#start gdb client
+GDB_PREFIX=arm-linux-androideabi-
+GDBCLIENT=${GDB_PREFIX}gdb
+GDBTUI=${GDB_PREFIX}gdbtui
+GDBSETUP=$APP_OUT/gdb.setup
+
+cp -f ./libs/armeabi/gdb.setup $GDBSETUP
+echo "file $APP_PROCESS" >> $GDBSETUP
+echo "target remote :5039" >> $GDBSETUP
+
+#to adjust tui windown height
+echo "winheight src 25" >> $GDBSETUP
+echo "focus cmd" >> $GDBSETUP
+echo "b WebCore::Document::updateLayout" >> $GDBSETUP 
+
+$GDBTUI -x $GDBSETUP
+
