@@ -1,0 +1,229 @@
+#!/bin/sh
+
+VERSION="4.0"
+
+pid_for_package ()
+{
+   pack_name=$1
+   _pid=`adb shell ps | awk -v PACKAGE="$pack_name" '
+   BEGIN {
+       FS=" "
+   
+       if (PACKAGE == "") {
+           PACKAGE="com.google.android.apps.maps"
+       }
+   
+       PID=0
+       PID_COLUMN=2
+    }
+
+    {
+       gsub("\r","",$NF)
+       if (NR == 1) {
+           for (n = 1; n <= NF; n++) {
+               if ($n == "PID") {
+                   PID_COLUMN=n;
+               }
+           }
+       } else {
+       if ($NF == PACKAGE) {
+           PID=$PID_COLUMN
+           }
+       }
+    }
+
+   END {
+       print PID 
+   }
+   '` 
+   echo $_pid
+}
+
+#start of this script
+###########################################
+
+USAGE="usage: `basename $0` package [-c] [-t pkgtype]"
+
+if [ $# -lt 1 ]; then
+   echo $USAGE 
+   exit
+fi
+
+###########################################
+## to process opt vars
+## -c : gdb command 
+## -t : -t pkgtype, pkgtype = ac | normal
+## package : pacakage name, such as com.xxx 
+USECMD=false
+PKGTYPE=normal
+TYPE_COUNT=0
+
+while [ $# -gt 0 ]
+do 
+  case $1 in 
+  -c)# 
+     USECMD=true
+     shift
+     ;;
+  -t)# 
+     if [ $TYPE_COUNT -ne 0 ]; then
+        echo $USAGE
+        exit 2
+     elif [ $2 = "ac" -o $2 = "normal" ]; then 
+        PKGTYPE=$2 
+        TYPE_COUNT=`expr $TYPE_COUNT + 1`
+        echo "$PKGTYPE package"
+        shift
+        shift
+     else
+        echo "#error: $2 is a wrong package type!"
+        exit 2
+     fi 
+     ;;
+   -a)#
+     if [ $TYPE_COUNT -eq 0 ]; then
+       echo "AC package"
+       PKGTYPE=ac
+       TYPE_COUNT=`expr $TYPE_COUNT + 1`
+       shift
+     else
+       echo $USAGE
+       exit 2
+     fi
+     ;;
+   -n)#
+     if [ $TYPE_COUNT -eq 0 ]; then 
+        echo "Normal package"
+        PKGTYPE=normal
+        TYPE_COUNT=`expr $TYPE_COUNT + 1`
+        shift
+     else 
+        echo $USAGE
+        exit 2
+     fi
+     ;;
+   -v)#
+     echo "x-gdb: version $VERSION"
+     shift
+     ;;
+  *)#
+     STR=`echo $1 | grep "^com.*"`
+     if [ ! -z $STR ]; then 
+        package=$1
+        shift
+     else
+	echo $USAGE
+        echo "#error: package should like com.XXX..."
+        exit 3
+     fi
+     ;;
+  esac
+done
+
+if [ -z $package ]; then 
+   echo $USAGE
+   exit 13   
+fi 
+
+echo "end get opts: $PKGTYPE"
+echo "package is $package"
+
+dir_android="BrowserShell/platform/android"
+curdir=`pwd | grep "BrowserShell/platform/android$"`
+
+if [ -z $curdir ]; then
+   echo "current director is not android work space"
+   exit 1
+fi
+
+if [ $PKGTYPE = "normal" ] ; then 
+  ARM_TYPE=armeabi 
+else
+  ARM_TYPE=armeabi-v7a
+fi
+
+APP_OUT=./obj/local/$ARM_TYPE
+APP_PROCESS=$APP_OUT/app_process
+
+
+
+#start gdb server
+#########################################
+
+#find extract-pid.awpk and copy to currnet path
+AWK_FILE=extract-pid.awk
+DEBUGGER=`basename $0`
+DEBUGGER_PATH=`which $DEBUGGER`
+DEBUGGER_DIR=`dirname $DEBUGGER_PATH`
+echo "debugger dir is $DEBUGGER_DIR"
+
+
+#GDBSERVER_PID=`adb shell ps | awk -f extract-pid.awk -v PACKAGE="lib/gdbserver"`
+GDBSERVER_PID=`pid_for_package lib/gdbserver`
+echo "gdbserver pid is $GDBSERVER_PID"
+
+if [ "$GDBSERVER_PID" != "0" ]; then 
+    adb shell kill -9 $GDBSERVER_PID
+fi
+
+#PID=`adb shell ps | awk -f extract-pid.awk -v PACKAGE="$1"`
+# PID=`adb shell ps | awk -f extract-pid.awk -v PACKAGE=$package`
+PID=`pid_for_package $package`
+
+if [ "$PID" -eq "0" ]; then
+## COMMAND: adb_cmd shell am start -n com.UCMobile.acr/com.UCMobile.main.UCMobile
+#Starting: Intent { cmp=com.UCMobile.acr/com.UCMobile.main.UCMobile }
+## COMMAND: adb_cmd shell sleep 2
+    adb shell am start -n $package/com.UCMobile.main.UCMobile
+    adb shell sleep 5
+    #PID=`adb shell ps | awk -f ~/gdb/extract-pid.awk -v PACKAGE="$1"`
+    # PID=`adb shell ps | awk -f extract-pid.awk -v PACKAGE=$package`
+    PID=`pid_for_package $package`
+fi 
+
+echo "$packge pid is $PID"
+
+
+## COMMAND: adb_cmd forward tcp:5039 localfilesystem:/data/data/com.UCMobile.acr/debug-socket
+adb forward tcp:5039 localfilesystem:/data/data/$package/debug-socket
+## COMMAND: adb_cmd shell run-as com.UCMobile.acr lib/gdbserver +debug-socket --attach 19275
+echo adb shell run-as $package lib/gdbserver +debug-socket --attach $PID
+adb shell run-as $package lib/gdbserver +debug-socket --attach $PID > ~/.gdb.log &
+
+
+#pull files from devices
+#####################################
+adb pull /system/bin/app_process $APP_OUT/app_process
+echo "Pulled app_process from device/emulator."
+
+adb pull /system/bin/linker $APP_OUT/linker
+echo "Pulled linker form device/emulator."
+
+adb pull /system/lib/libc.so $APP_OUT/libc.so
+echo "Pulled libc.so from device/emulator."
+
+#start gdb client
+GDB_PREFIX=arm-linux-androideabi-
+GDBCMD=${GDB_PREFIX}gdb
+GDBTUI=${GDB_PREFIX}gdbtui
+GDBSETUP=$APP_OUT/gdb.setup
+
+echo $ARM_TYPE
+echo "gdbsetup: $GDBSETUP"
+
+cp -f ./libs/$ARM_TYPE/gdb.setup $GDBSETUP -v
+echo "file $APP_PROCESS" >> $GDBSETUP
+echo "target remote :5039" >> $GDBSETUP
+echo "set print object on" >> $GDBSETUP
+
+#to adjust tui windown height
+if [ USECMD = "true" ]; then 
+   GDBCLIENT=$GDBCMD   
+else
+   GDBCLIENT=$GDBTUI
+   echo "winheight src 25" >> $GDBSETUP
+   echo "focus cmd" >> $GDBSETUP
+fi
+
+$GDBCLIENT -x $GDBSETUP
+
