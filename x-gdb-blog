@@ -1,0 +1,120 @@
+#!/bin/sh 
+#Author: Kyle(justbitguy@gmail.com)
+#Date:2013-10-12
+
+VERSION="4.0"
+
+pid_for_package ()
+{
+   pack_name=$1
+   _pid=`adb shell ps | awk -v PACKAGE="$pack_name" '
+   BEGIN {
+       FS=" "
+   
+       if (PACKAGE == "") {
+           PACKAGE="com.google.android.apps.maps"
+       }
+   
+       PID=0
+       PID_COLUMN=2
+    }
+
+    {
+       gsub("\r","",$NF)
+       if (NR == 1) {
+           for (n = 1; n <= NF; n++) {
+               if ($n == "PID") {
+                   PID_COLUMN=n;
+               }
+           }
+       } else {
+       if ($NF == PACKAGE) {
+           PID=$PID_COLUMN
+           }
+       }
+    }
+
+   END {
+       print PID 
+   }
+   '` 
+   echo $_pid
+}
+
+#start of this script
+###########################################
+
+USAGE="usage: `basename $0` package"
+
+if [ $# -lt 1 ]; then
+   echo $USAGE 
+   exit
+fi
+
+package=$1
+
+if [ -z $package ]; then 
+   echo $USAGE
+   exit 13   
+fi 
+
+ARM_TYPE=armeabi 
+
+APP_OUT=./obj/local/$ARM_TYPE
+APP_PROCESS=$APP_OUT/app_process
+
+DEBUGGER=`basename $0`
+DEBUGGER_PATH=`which $DEBUGGER`
+DEBUGGER_DIR=`dirname $DEBUGGER_PATH`
+echo "debugger dir is $DEBUGGER_DIR"
+
+GDBSERVER_PID=`pid_for_package lib/gdbserver`
+echo "gdbserver pid is $GDBSERVER_PID"
+
+if [ "$GDBSERVER_PID" != "0" ]; then 
+    adb shell kill -9 $GDBSERVER_PID
+fi
+
+PID=`pid_for_package $package`
+
+if [ "$PID" -eq "0" ]; then
+## COMMAND: adb_cmd shell am start -n $package/$Activity
+#Starting: Intent { cmp=$package/$Activity}
+## COMMAND: adb_cmd shell sleep 2
+    adb shell am start -n $package/$Activity
+    adb shell sleep 5
+    PID=`pid_for_package $package`
+fi 
+
+echo "$packge pid is $PID"
+
+
+adb forward tcp:5039 localfilesystem:/data/data/$package/debug-socket
+echo adb shell run-as $package lib/gdbserver +debug-socket --attach $PID
+adb shell run-as $package lib/gdbserver +debug-socket --attach $PID > ~/.gdb.log &
+
+
+#pull files from devices
+#####################################
+adb pull /system/bin/app_process $APP_OUT/app_process
+echo "Pulled app_process from device/emulator."
+
+adb pull /system/bin/linker $APP_OUT/linker
+echo "Pulled linker form device/emulator."
+
+adb pull /system/lib/libc.so $APP_OUT/libc.so
+echo "Pulled libc.so from device/emulator."
+
+#start gdb client
+GDB_PREFIX=arm-linux-androideabi-
+GDBCMD=${GDB_PREFIX}gdb
+GDBSETUP=$APP_OUT/gdb.setup
+
+cp -f ./libs/$ARM_TYPE/gdb.setup $GDBSETUP -v
+echo "file $APP_PROCESS" >> $GDBSETUP
+echo "target remote :5039" >> $GDBSETUP
+echo "set print object on" >> $GDBSETUP
+
+GDBCLIENT=$GDBCMD   
+$GDBCLIENT -x $GDBSETUP
+
